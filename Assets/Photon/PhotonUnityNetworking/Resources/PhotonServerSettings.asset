@@ -42,6 +42,7 @@ MonoBehaviour:
   - RPC_ResetUI
   - RPC_StartTimer
   - RPC_UpdateChips
+  - RPC_SyncPlayerNumber
   DisableAutoOpenWizard: 1
   ShowSettings: 0
   DevRegionSetOnce: 1

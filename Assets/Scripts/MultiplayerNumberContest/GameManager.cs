@@ -18,6 +18,8 @@ namespace Multiplayer.NumberContest
         private bool roundActive = false;
         private int startingChips = 100;
         private int minimumBet = 5;
+        private bool isFirstRound = true;
+        private int roundCount = 0;
 
         private void Awake()
         {
@@ -47,6 +49,8 @@ namespace Multiplayer.NumberContest
 
         IEnumerator StartRound()
         {
+            roundCount++;
+            Debug.Log($"Starting Round {roundCount}");
             roundActive = true;
             playerNumbers.Clear();
             playerDecisions.Clear();
@@ -66,18 +70,39 @@ namespace Multiplayer.NumberContest
                 photonView.RPC("RPC_UpdateChips", p, playerChips[p.ActorNumber]);
             }
 
+            // Generate and assign random numbers
             foreach (Player p in PhotonNetwork.PlayerList)
             {
                 int number = Random.Range(1, 101);
                 playerNumbers[p.ActorNumber] = number;
-                Debug.Log("Player " + p.ActorNumber + " assigned number: " + number);
+                Debug.Log($"Player {p.ActorNumber} assigned number: {number}");
                 photonView.RPC("RPC_AssignNumber", p, number);
+            }
+
+            // Extra synchronization step for first round
+            if (isFirstRound)
+            {
+                Debug.Log("First round - ensuring all player numbers are synchronized");
+                // Force synchronization of player numbers
+                foreach (Player p in PhotonNetwork.PlayerList)
+                {
+                    int number = playerNumbers[p.ActorNumber];
+                    photonView.RPC("RPC_SyncPlayerNumber", RpcTarget.All, p.ActorNumber, number);
+                }
+                
+                // Extra delay for first round to ensure sync
+                yield return new WaitForSeconds(1.5f);
+                isFirstRound = false;
             }
 
             photonView.RPC("RPC_StartTimer", RpcTarget.All, 10);
             yield return new WaitForSeconds(10f);
 
             roundActive = false;
+            
+            // Delay before deciding winner to ensure all decisions are received
+            yield return new WaitForSeconds(0.5f);
+            
             DecideWinner();
         }
 
@@ -97,6 +122,16 @@ namespace Multiplayer.NumberContest
         void RPC_AssignNumber(int num)
         {
             PlayerController.Local.SetNumber(num);
+        }
+
+        [PunRPC]
+        void RPC_SyncPlayerNumber(int actorId, int number)
+        {
+            if (!playerNumbers.ContainsKey(actorId) || playerNumbers[actorId] != number)
+            {
+                Debug.Log($"Syncing player {actorId} number to {number}");
+                playerNumbers[actorId] = number;
+            }
         }
 
         [PunRPC]
@@ -143,39 +178,67 @@ namespace Multiplayer.NumberContest
             if (decision == "Contest")
             {
                 playerBets[actorId] = betAmount;
+                
+                // Debug check to ensure player number is set
+                if (!playerNumbers.ContainsKey(actorId))
+                {
+                    Debug.LogError($"Player {actorId} is contesting but has no number assigned!");
+                }
+                else
+                {
+                    Debug.Log($"Player {actorId} decided to {decision} with number {playerNumbers[actorId]} and bet {betAmount}");
+                }
             }
-            
-            Debug.Log($"Player {actorId} decided to {decision}" + (decision == "Contest" ? $" with bet of {betAmount}" : ""));
+            else
+            {
+                Debug.Log($"Player {actorId} decided to {decision}");
+            }
         }
 
         void DecideWinner()
         {
+            Debug.Log($"Deciding winner for round {roundCount}");
+            
+            // Verify all player numbers before proceeding
+            foreach (Player p in PhotonNetwork.PlayerList)
+            {
+                int actorId = p.ActorNumber;
+                if (playerDecisions.ContainsKey(actorId) && 
+                    playerDecisions[actorId] == "Contest" &&
+                    !playerNumbers.ContainsKey(actorId))
+                {
+                    Debug.LogError($"Missing number for player {actorId} who contested!");
+                    // Force a number to avoid crashes
+                    playerNumbers[actorId] = Random.Range(1, 101);
+                }
+            }
+            
             List<KeyValuePair<int, int>> contenders = new();
             int totalPlayers = PhotonNetwork.PlayerList.Length;
             int contestedCount = 0;
             int foldedCount = 0;
             int totalPot = 0;
 
-            // Check all players who made a decision
+            // Collect all contesting players
             foreach (Player p in PhotonNetwork.PlayerList)
             {
                 int actorId = p.ActorNumber;
 
                 if (playerDecisions.ContainsKey(actorId))
                 {
-                    // Only add players who chose to contest
                     if (playerDecisions[actorId] == "Contest" && playerNumbers.ContainsKey(actorId))
                     {
-                        contenders.Add(new KeyValuePair<int, int>(actorId, playerNumbers[actorId]));
+                        int playerNum = playerNumbers[actorId];
+                        contenders.Add(new KeyValuePair<int, int>(actorId, playerNum));
+                        Debug.Log($"CONTEST: Player {actorId} has number {playerNum}");
                         contestedCount++;
                         
-                        // Add their bet to the pot
+                        // Handle bet
                         if (playerBets.ContainsKey(actorId))
                         {
                             int bet = playerBets[actorId];
                             totalPot += bet;
                             
-                            // Deduct chips from player who contested
                             if (playerChips.ContainsKey(actorId))
                             {
                                 playerChips[actorId] -= bet;
@@ -185,41 +248,55 @@ namespace Multiplayer.NumberContest
                     else if (playerDecisions[actorId] == "Fold")
                     {
                         foldedCount++;
+                        Debug.Log($"FOLD: Player {actorId} folded");
                     }
                 }
             }
 
             string resultMessage;
             int winnerId = -1;
+            int winningNumber = -1;
 
+            // Determine winner based on contender count
             if (contenders.Count == 0)
             {
                 resultMessage = "<color=#FF5555>No Contestants! Everyone folded!</color>";
-                // No winner, chips stay in the pot
+                Debug.Log("No contestants - everyone folded");
             }
             else if (contenders.Count == 1)
             {
                 winnerId = contenders[0].Key;
-                resultMessage = $"<color=#55FF55>Player {winnerId} wins by default</color> with <color=#FFFF00>{contenders[0].Value}</color>!";
-                
-                // Award pot to winner
-                if (playerChips.ContainsKey(winnerId))
-                {
-                    playerChips[winnerId] += totalPot;
-                }
+                winningNumber = contenders[0].Value;
+                resultMessage = $"<color=#55FF55>Player {winnerId} wins by default</color> with <color=#FFFF00>{winningNumber}</color>!";
+                Debug.Log($"Only one contestant - Player {winnerId} wins by default with number {winningNumber}");
             }
             else
             {
-                // Sort by number value in descending order (highest number first)
-                contenders.Sort((a, b) => b.Value.CompareTo(a.Value));
-                winnerId = contenders[0].Key;
-                resultMessage = $"<color=#55FF55>Player {winnerId} wins</color> with <color=#FFFF00>{contenders[0].Value}</color>!";
+                // Find player with highest number directly
+                KeyValuePair<int, int> highestPair = contenders[0];
                 
-                // Award pot to winner
-                if (playerChips.ContainsKey(winnerId))
+                Debug.Log("Multiple contestants - comparing numbers:");
+                foreach (var pair in contenders)
                 {
-                    playerChips[winnerId] += totalPot;
+                    Debug.Log($"Player {pair.Key} has number {pair.Value}");
+                    if (pair.Value > highestPair.Value)
+                    {
+                        highestPair = pair;
+                        Debug.Log($"New highest: Player {pair.Key} with number {pair.Value}");
+                    }
                 }
+                
+                winnerId = highestPair.Key;
+                winningNumber = highestPair.Value;
+                resultMessage = $"<color=#55FF55>Player {winnerId} wins</color> with <color=#FFFF00>{winningNumber}</color>!";
+                Debug.Log($"Winner is Player {winnerId} with number {winningNumber}");
+            }
+            
+            // Award pot to winner if there is one
+            if (winnerId != -1 && playerChips.ContainsKey(winnerId))
+            {
+                playerChips[winnerId] += totalPot;
+                Debug.Log($"Awarding {totalPot} chips to Player {winnerId}");
             }
             
             // Add pot info to result message
