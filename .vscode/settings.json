@@ -56,6 +56,6 @@
         "temp/": true,
         "Temp/": true
     },
-    "dotnet.defaultSolution": "Interview Task.sln",
+    "dotnet.defaultSolution": "Unity-Technologies--Task.sln",
     "dotnet.preferCSharpExtension": true
 }
